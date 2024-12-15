@@ -3,6 +3,7 @@ from aiogram import Bot, Dispatcher, types
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery
 from aiogram.utils import executor
 from aiogram.contrib.middlewares.logging import LoggingMiddleware
+import json
 
 # Включаем логирование
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
@@ -50,7 +51,7 @@ questions = [
     }]
 
 # Хранение состояния пользователей
-user_data = {}
+USER_DATA_FILE = "user_data.json"
 
 # Инициализация бота
 TOKEN = "7566625979:AAHvtbpKS2KA7aJWydiVAzyyfrFC1K4AGnQ"
@@ -58,23 +59,41 @@ bot = Bot(token=TOKEN)
 dp = Dispatcher(bot)
 dp.middleware.setup(LoggingMiddleware())
 
+def load_user_data():
+    try:
+        with open(USER_DATA_FILE, "r") as file:
+            return json.load(file)
+    except FileNotFoundError:
+        return {}
+
+# Функция для сохранения данных пользователей
+def save_user_data(data):
+    with open(USER_DATA_FILE, "w") as file:
+        json.dump(data, file)
+
+# Инициализация данных пользователей
+user_data = load_user_data()
+
+# Команда /start
 @dp.message_handler(commands=['start'])
 async def start(message: types.Message):
     await message.reply("Привет! Давай начнем тест по истории России. Нажми /quiz, чтобы начать!")
 
+# Команда /quiz
 @dp.message_handler(commands=['quiz'])
 async def quiz(message: types.Message):
-    chat_id = message.chat.id
-    user_data[chat_id] = {"score": 0, "question_index": 0}
-    await ask_question(chat_id)
+    user_id = str(message.from_user.id)
+    if user_id not in user_data:
+        user_data[user_id] = {"score": 0, "question_index": 0}
+    else:
+        user_data[user_id]["score"] = 0
+        user_data[user_id]["question_index"] = 0
+    save_user_data(user_data)
+    await ask_question(message.chat.id, user_id)
 
-async def ask_question(chat_id):
-    user = user_data.get(chat_id)
-
-    if not user:
-        await bot.send_message(chat_id, "Начните тест с команды /quiz.")
-        return
-
+# Функция для отправки вопроса
+async def ask_question(chat_id, user_id):
+    user = user_data[user_id]
     question_index = user["question_index"]
 
     if question_index < len(questions):
@@ -83,54 +102,48 @@ async def ask_question(chat_id):
 
         keyboard = InlineKeyboardMarkup()
         for i, option in enumerate(options):
-            keyboard.add(InlineKeyboardButton(option, callback_data=str(i)))
+            keyboard.add(InlineKeyboardButton(option, callback_data=f"{user_id}:{i}"))
 
         await bot.send_message(chat_id, question["question"], reply_markup=keyboard)
     else:
         score = user["score"]
         await bot.send_message(chat_id, f"Тест завершен! Ты ответил правильно на {score} из {len(questions)} вопросов.")
-        del user_data[chat_id]
+        user_data[user_id]["question_index"] = 0
+        user_data[user_id]["score"] = 0
+        save_user_data(user_data)
 
-@dp.callback_query_handler()
-async def button(query: CallbackQuery):
-    chat_id = query.message.chat.id
+# Обработчик ответов
+@dp.callback_query_handler(lambda callback_query: True)
+async def handle_answer(callback_query: types.CallbackQuery):
+    user_id, selected_option = callback_query.data.split(":")
+    selected_option = int(selected_option)
 
-    if chat_id not in user_data:
-        await query.answer()
-        await query.message.edit_text("Начните тест с команды /quiz.")
+    if user_id not in user_data:
+        await callback_query.answer("Начните тест с команды /quiz.", show_alert=True)
         return
 
-    user = user_data[chat_id]
+    user = user_data[user_id]
     question_index = user["question_index"]
-    selected_option = int(query.data)
 
     # Проверяем ответ
     if selected_option == questions[question_index]["answer"]:
         user["score"] += 1
 
     user["question_index"] += 1
+    save_user_data(user_data)
 
-    await query.answer()
+    await callback_query.answer()
+
     if user["question_index"] < len(questions):
-        await next_question(chat_id)
+        await ask_question(callback_query.message.chat.id, user_id)
     else:
-        await query.message.edit_text(
+        await bot.send_message(
+            callback_query.message.chat.id,
             f"Тест завершен! Ты ответил правильно на {user['score']} из {len(questions)} вопросов."
         )
-        del user_data[chat_id]
-
-async def next_question(chat_id):
-    user = user_data[chat_id]
-
-    question_index = user["question_index"]
-    question = questions[question_index]
-    options = question["options"]
-
-    keyboard = InlineKeyboardMarkup()
-    for i, option in enumerate(options):
-        keyboard.add(InlineKeyboardButton(option, callback_data=str(i)))
-
-    await bot.send_message(chat_id, question["question"], reply_markup=keyboard)
+        user_data[user_id]["question_index"] = 0
+        user_data[user_id]["score"] = 0
+        save_user_data(user_data)
 
 if __name__ == "__main__":
     executor.start_polling(dp, skip_updates=True)
