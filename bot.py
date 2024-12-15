@@ -62,8 +62,13 @@ dp.middleware.setup(LoggingMiddleware())
 def load_user_data():
     try:
         with open(USER_DATA_FILE, "r") as file:
-            return json.load(file)
+            data = file.read()
+            return json.loads(data) if data.strip() else {}
     except FileNotFoundError:
+        return {}
+    except json.JSONDecodeError:
+        # Логирование ошибки и возврат пустого словаря
+        logger.error(f"Ошибка декодирования JSON в файле {USER_DATA_FILE}. Файл будет перезаписан.")
         return {}
 
 # Функция для сохранения данных пользователей
