@@ -1,8 +1,13 @@
-import logging 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackQueryHandler, CallbackContext
-# Включаем логированиеlogging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+import logging
+from aiogram import Bot, Dispatcher, types
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery
+from aiogram.utils import executor
+from aiogram.contrib.middlewares.logging import LoggingMiddleware
+
+# Включаем логирование
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
+
 # Вопросы и ответы
 questions = [
     {        "question": "Какое событие считается началом Древнерусского государства?",
@@ -43,55 +48,89 @@ questions = [
     {        "question": "Когда была принята новая Конституция Российской Федерации?",
         "options": ["1991 год", "1993 год", "1995 год", "2000 год"],        "answer": 1
     }]
-# Хранение состояния бота
+
+# Хранение состояния пользователей
 user_data = {}
-def start(update: Update, context: CallbackContext) -> None:    
-    update.message.reply_text('Привет! Давай начнем тест по истории России. Нажми /quiz, чтобы начать!')
 
-def quiz(update: Update, context: CallbackContext) -> None:
-    user_data[update.message.chat_id] = {        
-        "score": 0,
-        "question_index": 0    
-    }
-    ask_question(update, context)
-    
-def ask_question(update: Update, context: CallbackContext) -> None:    
-    user_id = update.message.chat_id
-    question_index = user_data[user_id]["question_index"]    
-    if question_index < len(questions):        
+# Инициализация бота
+TOKEN = "7566625979:AAHvtbpKS2KA7aJWydiVAzyyfrFC1K4AGnQ"
+bot = Bot(token=TOKEN)
+dp = Dispatcher(bot)
+dp.middleware.setup(LoggingMiddleware())
+
+@dp.message_handler(commands=['start'])
+async def start(message: types.Message):
+    await message.reply("Привет! Давай начнем тест по истории России. Нажми /quiz, чтобы начать!")
+
+@dp.message_handler(commands=['quiz'])
+async def quiz(message: types.Message):
+    chat_id = message.chat.id
+    user_data[chat_id] = {"score": 0, "question_index": 0}
+    await ask_question(chat_id)
+
+async def ask_question(chat_id):
+    user = user_data.get(chat_id)
+
+    if not user:
+        await bot.send_message(chat_id, "Начните тест с команды /quiz.")
+        return
+
+    question_index = user["question_index"]
+
+    if question_index < len(questions):
         question = questions[question_index]
-        options = question["options"]        
-        keyboard = [[InlineKeyboardButton(option, callback_data=str(i)) for i, option in enumerate(options)]]
-            
-            
-        reply_markup = InlineKeyboardMarkup(keyboard)        
-        update.message.reply_text(question["question"], reply_markup=reply_markup)
-    else:        
-        update.message.reply_text(f'Тест завершен! Ты ответил правильно на {user_data[user_id]["score"]} из {len(questions)} вопросов.')
-        del user_data[user_id]  # Удаляем данные пользователя после завершения теста
+        options = question["options"]
 
-def button(update: Update, context: CallbackContext) -> None:    
-    user_id = update.callback_query.message.chat_id
-    question_index = user_data[user_id]["question_index"]    
-    # Проверяем правильность ответа    
-    selected_option = int(update.callback_query.data)
-    if selected_option == questions[question_index]["answer"]:        
-        user_data[user_id]["score"] += 1
-        user_data[user_id]["question_index"] += 1
-    ask_question(update.callback_query, context)
+        keyboard = InlineKeyboardMarkup()
+        for i, option in enumerate(options):
+            keyboard.add(InlineKeyboardButton(option, callback_data=str(i)))
 
-def main() -> None:    # Вставьте сюда ваш токен
-    TOKEN = '7566625979:AAHvtbpKS2KA7aJWydiVAzyyfrFC1K4AGnQ'    
-    updater = Updater(TOKEN)
-    # Получаем диспетчер для регистрации обработчиков    
-    dispatcher = updater.dispatcher
-    # Обработчики команд
-    dispatcher.add_handler(CommandHandler("start", start))    
-    dispatcher.add_handler(CommandHandler("quiz", quiz))
-    dispatcher.add_handler(CallbackQueryHandler(button))
-    # Запускаем бота    updater.start_polling()
-    # Ожидаем завершения работы
-    updater.idle()
+        await bot.send_message(chat_id, question["question"], reply_markup=keyboard)
+    else:
+        score = user["score"]
+        await bot.send_message(chat_id, f"Тест завершен! Ты ответил правильно на {score} из {len(questions)} вопросов.")
+        del user_data[chat_id]
 
-if __name__ == '__main__':    
-    main()
+@dp.callback_query_handler()
+async def button(query: CallbackQuery):
+    chat_id = query.message.chat.id
+
+    if chat_id not in user_data:
+        await query.answer()
+        await query.message.edit_text("Начните тест с команды /quiz.")
+        return
+
+    user = user_data[chat_id]
+    question_index = user["question_index"]
+    selected_option = int(query.data)
+
+    # Проверяем ответ
+    if selected_option == questions[question_index]["answer"]:
+        user["score"] += 1
+
+    user["question_index"] += 1
+
+    await query.answer()
+    if user["question_index"] < len(questions):
+        await next_question(chat_id)
+    else:
+        await query.message.edit_text(
+            f"Тест завершен! Ты ответил правильно на {user['score']} из {len(questions)} вопросов."
+        )
+        del user_data[chat_id]
+
+async def next_question(chat_id):
+    user = user_data[chat_id]
+
+    question_index = user["question_index"]
+    question = questions[question_index]
+    options = question["options"]
+
+    keyboard = InlineKeyboardMarkup()
+    for i, option in enumerate(options):
+        keyboard.add(InlineKeyboardButton(option, callback_data=str(i)))
+
+    await bot.send_message(chat_id, question["question"], reply_markup=keyboard)
+
+if __name__ == "__main__":
+    executor.start_polling(dp, skip_updates=True)
